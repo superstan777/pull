@@ -6,6 +6,7 @@ import Link from "next/link";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
 import { Badge } from "@/components/ui/badge";
+import { LoadingSpinner } from "@/components/LoadingSpinner";
 import { useAuth } from "@/hooks/useAuth";
 import { getSessions, Session } from "@/lib/firestore";
 import { formatDate, formatDuration } from "@/lib/timeUtils";
@@ -38,11 +39,7 @@ function HistoryContent() {
 
       <main className="flex-1 mx-auto w-full max-w-120 px-4 py-4">
         {loading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-20 rounded-xl bg-muted animate-pulse" />
-            ))}
-          </div>
+          <LoadingSpinner />
         ) : sessions.length === 0 ? (
           <div className="text-center text-muted-foreground py-16">
             <p className="text-base">No sessions yet.</p>
