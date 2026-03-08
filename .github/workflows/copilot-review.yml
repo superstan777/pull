@@ -5,6 +5,7 @@ on:
     types:
       - opened
       - reopened
+      - synchronize
 
 permissions:
   contents: read
@@ -14,7 +15,9 @@ jobs:
   request-review:
     name: Request Copilot Review
     runs-on: ubuntu-latest
-    if: startsWith(github.head_ref, 'copilot/')
+    if: |
+      startsWith(github.head_ref, 'copilot/') ||
+      startsWith(github.head_ref, 'Copilot/')
     steps:
       - name: Request review from Copilot
         env:
@@ -22,4 +25,5 @@ jobs:
         run: |
           gh pr edit ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
-            --add-reviewer Copilot
+            --add-reviewer copilot || true
+          echo "Review request sent (or already exists)"

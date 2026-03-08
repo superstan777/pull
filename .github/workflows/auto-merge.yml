@@ -15,8 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     if: >
       github.event.review.state == 'approved' &&
-      startsWith(github.event.pull_request.head.ref, 'copilot/') &&
-      (github.event.review.user.login == 'Copilot' || github.event.review.user.login == 'github-actions[bot]')
+      (
+        startsWith(github.event.pull_request.head.ref, 'copilot/') ||
+        startsWith(github.event.pull_request.head.ref, 'Copilot/')
+      ) &&
+      (
+        github.event.review.user.login == 'copilot[bot]' ||
+        github.event.review.user.login == 'Copilot' ||
+        github.event.review.user.login == 'github-copilot[bot]'
+      )
     steps:
       - name: Wait for CI checks and merge
         env:
