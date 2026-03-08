@@ -48,7 +48,7 @@ jobs:
         run: |
           gh issue edit ${{ github.event.issue.number }} \
             --repo ${{ github.repository }} \
-            --add-assignee "@copilot"
+            --add-label copilot
           gh issue comment ${{ github.event.issue.number }} \
             --repo ${{ github.repository }} \
             --body "Copilot has been assigned and will start shortly."

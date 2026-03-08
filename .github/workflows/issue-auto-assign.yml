@@ -46,8 +46,11 @@ jobs:
         run: |
           gh issue edit ${{ github.event.issue.number }} \
             --repo ${{ github.repository }} \
-            --add-label copilot \
-            --add-assignee "@copilot"
+            --add-label copilot
+          gh api \
+            --method POST \
+            /repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/assignees \
+            --field 'assignees[]=copilot' || true
           gh issue comment ${{ github.event.issue.number }} \
             --repo ${{ github.repository }} \
             --body "Copilot has been assigned and will start shortly."
