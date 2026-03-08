@@ -1,0 +1,54 @@
+name: Copilot Assign
+
+on:
+  issues:
+    types:
+      - labeled
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  assign:
+    name: Assign Copilot or Queue Issue
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'copilot'
+    steps:
+      - name: Check for open Copilot PR
+        id: check_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OPEN_PR=$(gh pr list \
+            --repo ${{ github.repository }} \
+            --state open \
+            --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("copilot/"))] | length')
+          echo "open_pr_count=$OPEN_PR" >> "$GITHUB_OUTPUT"
+
+      - name: Queue issue if Copilot PR is already open
+        if: steps.check_pr.outputs.open_pr_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --repo ${{ github.repository }} \
+            --remove-label copilot \
+            --add-label queued
+          gh issue comment ${{ github.event.issue.number }} \
+            --repo ${{ github.repository }} \
+            --body "A Copilot PR is already open. This issue has been queued and will start automatically after the current PR is merged."
+
+      - name: Assign Copilot if no open PR
+        if: steps.check_pr.outputs.open_pr_count == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --repo ${{ github.repository }} \
+            --add-assignee "@copilot"
+          gh issue comment ${{ github.event.issue.number }} \
+            --repo ${{ github.repository }} \
+            --body "Copilot has been assigned and will start shortly."
