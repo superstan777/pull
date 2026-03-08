@@ -20,6 +20,19 @@ All Firestore read/write operations for sessions; the single data-access layer f
 - `logSet` uses a full array replace (not `arrayUnion`) because Firestore doesn't support updating nested array elements by index; caller must pass the current `exercises` snapshot
 - `Timestamp.now()` (client-side) is used for `loggedAt` on individual sets; `serverTimestamp()` is used for `startedAt`/`finishedAt` to avoid clock skew on session-level timestamps
 
+## E2E test override layer (index.ts)
+
+`index.ts` wraps every exported function with a `wrap()` helper that checks
+`window.__E2E_FIRESTORE__` at call time. When the global is present (injected
+by Playwright via `addInitScript`), the mock implementation runs; otherwise the
+real Firebase SDK call executes.
+
+This design exists because the Firebase JS SDK v12 uses WebChannel/gRPC-web
+transport for all Firestore operations. The browser sends POST requests to
+URLs like `.../Firestore/Write/channel?...` with binary protobuf payloads —
+impossible to mock reliably via Playwright `page.route()`. Application-level
+mocking bypasses the transport entirely.
+
 ## Used by
 
 - `lib/firestore.ts` exports are consumed by `hooks/useSession.ts`, `app/session/[sessionId]/page.tsx`, `app/history/page.tsx`, `app/history/[sessionId]/page.tsx`, `app/page.tsx`

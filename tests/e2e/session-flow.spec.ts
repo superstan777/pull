@@ -17,7 +17,12 @@
  *   In CI:    the var is injected from GitHub Actions secrets at workflow level.
  *
  * Firestore strategy:
- *   All Firestore endpoints are intercepted so no real data is written.
+ *   Application-level mocking — the lib/firestore/index.ts module checks for
+ *   window.__E2E_FIRESTORE__ (injected via addInitScript) and delegates to
+ *   those mock implementations instead of calling the Firebase SDK.
+ *   This avoids mocking the complex WebChannel/gRPC-web transport that
+ *   Firestore SDK v12 uses in the browser.  All Firestore network endpoints
+ *   are blocked by a catch-all route.abort() as a safety net.
  */
 
 import { test, expect, type Page } from "@playwright/test";
@@ -34,128 +39,6 @@ const TOKEN_EXPIRY = Date.now() + 3600 * 1000;
 const SESSION_ID = "test-session-id";
 const MOCK_PROJECT_ID =
   process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "pull-3d186";
-
-// ── Firestore mock documents ──────────────────────────────────────────────────
-
-const MOCK_SESSION_DOC = {
-  name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
-  fields: {
-    planId: { stringValue: "mock-plan-v1" },
-    planName: { stringValue: "Push Day" },
-    startedAt: { timestampValue: new Date().toISOString() },
-    finishedAt: { nullValue: "NULL_VALUE" },
-    exercises: {
-      arrayValue: {
-        values: [
-          {
-            mapValue: {
-              fields: {
-                exerciseId: { stringValue: "ex-1" },
-                exerciseName: { stringValue: "Bench Press" },
-                sets: {
-                  arrayValue: {
-                    values: [
-                      {
-                        mapValue: {
-                          fields: {
-                            setNumber: { integerValue: "1" },
-                            reps: { nullValue: "NULL_VALUE" },
-                            weight: { nullValue: "NULL_VALUE" },
-                            loggedAt: { nullValue: "NULL_VALUE" },
-                          },
-                        },
-                      },
-                      {
-                        mapValue: {
-                          fields: {
-                            setNumber: { integerValue: "2" },
-                            reps: { nullValue: "NULL_VALUE" },
-                            weight: { nullValue: "NULL_VALUE" },
-                            loggedAt: { nullValue: "NULL_VALUE" },
-                          },
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-          {
-            mapValue: {
-              fields: {
-                exerciseId: { stringValue: "ex-2" },
-                exerciseName: { stringValue: "Lateral Raises" },
-                sets: {
-                  arrayValue: {
-                    values: [
-                      {
-                        mapValue: {
-                          fields: {
-                            setNumber: { integerValue: "1" },
-                            reps: { nullValue: "NULL_VALUE" },
-                            weight: { nullValue: "NULL_VALUE" },
-                            loggedAt: { nullValue: "NULL_VALUE" },
-                          },
-                        },
-                      },
-                      {
-                        mapValue: {
-                          fields: {
-                            setNumber: { integerValue: "2" },
-                            reps: { nullValue: "NULL_VALUE" },
-                            weight: { nullValue: "NULL_VALUE" },
-                            loggedAt: { nullValue: "NULL_VALUE" },
-                          },
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-          {
-            mapValue: {
-              fields: {
-                exerciseId: { stringValue: "ex-3" },
-                exerciseName: { stringValue: "Lat Pulldown" },
-                sets: {
-                  arrayValue: {
-                    values: [
-                      {
-                        mapValue: {
-                          fields: {
-                            setNumber: { integerValue: "1" },
-                            reps: { nullValue: "NULL_VALUE" },
-                            weight: { nullValue: "NULL_VALUE" },
-                            loggedAt: { nullValue: "NULL_VALUE" },
-                          },
-                        },
-                      },
-                      {
-                        mapValue: {
-                          fields: {
-                            setNumber: { integerValue: "2" },
-                            reps: { nullValue: "NULL_VALUE" },
-                            weight: { nullValue: "NULL_VALUE" },
-                            loggedAt: { nullValue: "NULL_VALUE" },
-                          },
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-        ],
-      },
-    },
-  },
-  createTime: new Date().toISOString(),
-  updateTime: new Date().toISOString(),
-};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -233,7 +116,9 @@ async function injectFirebaseAuth(page: Page) {
 
 /**
  * Mock all Firebase HTTP calls so no real network requests are made.
- * Auth calls return canned responses; Firestore calls return mock documents.
+ * Auth calls return canned responses; Firestore WebChannel endpoints are
+ * blocked by the catch-all.  Actual Firestore logic is handled by the
+ * application-level mocks in injectFirestoreMocks().
  *
  * IMPORTANT — Playwright matches routes LIFO (last registered = highest
  * priority).  The catch-all abort must be registered FIRST so that every
@@ -281,72 +166,78 @@ async function mockAllFirebaseRoutes(page: Page) {
       }),
     }),
   );
+}
 
-  // ── Firestore ─────────────────────────────────────────────────────────────
+/**
+ * Inject application-level Firestore mocks via window.__E2E_FIRESTORE__.
+ *
+ * The lib/firestore/index.ts module checks this global at the top of each
+ * exported function.  When present, mock implementations run instead of real
+ * Firebase SDK calls — completely bypassing the WebChannel/gRPC-web transport.
+ */
+async function injectFirestoreMocks(page: Page) {
+  await page.addInitScript(
+    ([sessionId]) => {
+      const fakeTimestamp = {
+        toDate: () => new Date(),
+        seconds: 1700000000,
+        nanoseconds: 0,
+      };
 
-  // gRPC-web Listen stream (onSnapshot)
-  await page.route("**/google.firestore.v1.Firestore/Listen**", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        targetChange: { targetChangeType: "CURRENT", targetIds: [] },
-      }),
-    }),
-  );
+      const mockSession = {
+        id: sessionId,
+        planId: "mock-plan-v1",
+        planName: "Push Day",
+        startedAt: fakeTimestamp,
+        finishedAt: null,
+        exercises: [
+          {
+            exerciseId: "ex-1",
+            exerciseName: "Bench Press",
+            sets: [
+              { setNumber: 1, reps: null, weight: null, loggedAt: null },
+              { setNumber: 2, reps: null, weight: null, loggedAt: null },
+            ],
+          },
+          {
+            exerciseId: "ex-2",
+            exerciseName: "Lateral Raises",
+            sets: [
+              { setNumber: 1, reps: null, weight: null, loggedAt: null },
+              { setNumber: 2, reps: null, weight: null, loggedAt: null },
+            ],
+          },
+          {
+            exerciseId: "ex-3",
+            exerciseName: "Lat Pulldown",
+            sets: [
+              { setNumber: 1, reps: null, weight: null, loggedAt: null },
+              { setNumber: 2, reps: null, weight: null, loggedAt: null },
+            ],
+          },
+        ],
+      };
 
-  // getActiveSession uses getDocs+orderBy → runQuery POST
-  await page.route("**/firestore.googleapis.com/**:runQuery**", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify([{ readTime: new Date().toISOString() }]),
-    }),
-  );
-
-  // createSession (addDoc → POST to collection) — registered before session doc
-  // Trailing ** required: Firestore REST appends ?key=<apiKey> to every URL.
-  await page.route(
-    `**/firestore.googleapis.com/**/users/${FAKE_UID}/sessions**`,
-    (route) => {
-      if (route.request().method() === "POST") {
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
-            fields: {},
-            createTime: new Date().toISOString(),
-            updateTime: new Date().toISOString(),
-          }),
-        });
-      } else {
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ documents: [] }),
-        });
-      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__E2E_FIRESTORE__ = {
+        createSession: async () => sessionId,
+        getActiveSession: async () => null,
+        subscribeToSession: (
+          _uid: string,
+          _sid: string,
+          onData: (s: typeof mockSession) => void,
+        ) => {
+          setTimeout(() => onData(mockSession), 0);
+          return () => {}; // unsubscribe
+        },
+        logSet: async () => [],
+        finishSession: async () => {},
+        getSessions: async () => [],
+        getSession: async (_uid: string, sid: string) =>
+          sid === sessionId ? mockSession : null,
+      };
     },
-  );
-
-  // Session document reads (GET) and writes (PATCH / updateDoc).
-  // Registered LAST = highest priority, overrides the sessions collection
-  // pattern above for URLs that contain the session ID.
-  await page.route(
-    `**/firestore.googleapis.com/**/${SESSION_ID}**`,
-    (route) => {
-      const method = route.request().method();
-      if (method === "GET" || method === "PATCH" || method === "POST") {
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MOCK_SESSION_DOC),
-        });
-      } else {
-        route.continue();
-      }
-    },
+    [SESSION_ID] as const,
   );
 }
 
@@ -355,6 +246,7 @@ async function mockAllFirebaseRoutes(page: Page) {
 test.describe("Session happy-path flow", () => {
   test.beforeEach(async ({ page }) => {
     await injectFirebaseAuth(page);
+    await injectFirestoreMocks(page);
     await mockAllFirebaseRoutes(page);
   });
 
