@@ -2,39 +2,43 @@
  * E2E session flow test — happy path
  *
  * Auth strategy:
- *   Real Firebase phone auth using the dedicated E2E test account:
- *     Phone : +48500500500
- *     OTP   : 500500  (static code configured in Firebase Console → Auth → Test phone numbers)
+ *   IndexedDB injection — pre-populate Firebase's auth store before the page
+ *   loads so onAuthStateChanged fires with a fake user immediately.  All
+ *   Firebase Auth HTTP calls (token refresh, account lookup) are intercepted
+ *   via page.route() and fulfilled with canned responses.
  *
- *   The test goes through the actual login UI so the phone-auth flow is
- *   covered end-to-end.  reCAPTCHA is set to invisible size; Firebase
- *   test phone numbers bypass real SMS and skip the reCAPTCHA challenge.
+ *   The IndexedDB key includes the real Firebase API key
+ *   (process.env.NEXT_PUBLIC_FIREBASE_API_KEY) because Firebase constructs the
+ *   key as `firebase:authUser:{apiKey}:[DEFAULT]`.  Using the wrong key means
+ *   the SDK never finds the stored user.
+ *
+ *   Locally:  playwright.config.ts loads .env.local via dotenv, so the var is
+ *             available in the test process.
+ *   In CI:    the var is injected from GitHub Actions secrets at workflow level.
  *
  * Firestore strategy:
- *   All Firestore endpoints are intercepted via page.route() so no real data
- *   is written to the production database.
- *
- * The app is started via playwright.config.ts webServer (npm run dev).
- * Real Firebase credentials are loaded from .env.local locally and from
- * GitHub Actions secrets in CI.
+ *   All Firestore endpoints are intercepted so no real data is written.
  */
 
 import { test, expect, type Page } from "@playwright/test";
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-/** Firebase test phone number configured in Firebase Console */
-const TEST_PHONE = "+48500500500";
-/** Static OTP paired with TEST_PHONE in Firebase Console */
-const TEST_OTP = "500500";
+const FIREBASE_API_KEY = process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "";
+const FAKE_UID = "e2e-test-user-123";
+const FAKE_PHONE = "+48500500500";
+const FAKE_ACCESS_TOKEN = "fake-access-token-e2e";
+const FAKE_REFRESH_TOKEN = "fake-refresh-token-e2e";
+const TOKEN_EXPIRY = Date.now() + 3600 * 1000;
 
 const SESSION_ID = "test-session-id";
-const MOCK_PROJECT_ID = "pull-3d186";
+const MOCK_PROJECT_ID =
+  process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "pull-3d186";
 
 // ── Firestore mock documents ──────────────────────────────────────────────────
 
 const MOCK_SESSION_DOC = {
-  name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/e2e-test-user/sessions/${SESSION_ID}`,
+  name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
   fields: {
     planId: { stringValue: "mock-plan-v1" },
     planName: { stringValue: "Push Day" },
@@ -156,37 +160,128 @@ const MOCK_SESSION_DOC = {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Sign in through the login UI using the Firebase test phone account.
- * Firebase test phone numbers bypass real SMS; the static OTP is accepted
- * server-side without a reCAPTCHA challenge (invisible reCAPTCHA + test number).
- * After successful login the page is redirected to "/".
+ * Pre-populate Firebase's IndexedDB auth store with a fake user so that
+ * onAuthStateChanged fires with the test user immediately on page load,
+ * bypassing the login UI and reCAPTCHA entirely.
+ *
+ * The IndexedDB key MUST use the actual Firebase API key the app was built
+ * with (`FIREBASE_API_KEY`), not a hard-coded fake — otherwise the SDK looks
+ * up a different key and finds nothing.
+ *
+ * The value MUST be a plain object — Firebase reads it with `data.value` and
+ * calls `UserImpl._fromJSON()` on it.  A JSON string would be treated as an
+ * ID token, triggering a `getAccountInfo` network call.
  */
-async function loginWithTestAccount(page: Page) {
-  await page.goto("/login");
-  await page.getByLabel(/phone number/i).fill(TEST_PHONE);
-  await page.getByRole("button", { name: /send code/i }).click();
-  await page.getByLabel(/verification code/i).waitFor({ timeout: 15_000 });
-  await page.getByLabel(/verification code/i).fill(TEST_OTP);
-  await page.getByRole("button", { name: /^verify$/i }).click();
-  await page.waitForURL("/", { timeout: 15_000 });
+async function injectFirebaseAuth(page: Page) {
+  await page.addInitScript(
+    ([uid, phone, apiKey, accessToken, refreshToken, expiryTime]) => {
+      const AUTH_KEY = `firebase:authUser:${apiKey}:[DEFAULT]`;
+      const fakeUser = {
+        uid,
+        phoneNumber: phone,
+        isAnonymous: false,
+        emailVerified: false,
+        providerData: [
+          {
+            providerId: "phone",
+            uid: phone,
+            displayName: null,
+            email: null,
+            phoneNumber: phone,
+            photoURL: null,
+          },
+        ],
+        stsTokenManager: {
+          refreshToken,
+          accessToken,
+          expirationTime: expiryTime,
+        },
+        createdAt: "1700000000000",
+        lastLoginAt: "1700000000000",
+        appName: "[DEFAULT]",
+        apiKey,
+      };
+
+      const req = indexedDB.open("firebaseLocalStorageDb", 1);
+      req.onupgradeneeded = (e) => {
+        const db = (e.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains("firebaseLocalStorage")) {
+          db.createObjectStore("firebaseLocalStorage", {
+            keyPath: "fbase_key",
+          });
+        }
+      };
+      req.onsuccess = (e) => {
+        const db = (e.target as IDBOpenDBRequest).result;
+        const tx = db.transaction("firebaseLocalStorage", "readwrite");
+        tx.objectStore("firebaseLocalStorage").put({
+          fbase_key: AUTH_KEY,
+          value: fakeUser, // plain object — NOT JSON.stringify()
+        });
+      };
+    },
+    [
+      FAKE_UID,
+      FAKE_PHONE,
+      FIREBASE_API_KEY,
+      FAKE_ACCESS_TOKEN,
+      FAKE_REFRESH_TOKEN,
+      TOKEN_EXPIRY,
+    ] as const,
+  );
 }
 
 /**
- * Intercept all Firestore endpoints so no real data is written to the
- * production database.  Firebase Auth requests pass through to the real
- * Firebase project (real credentials + test phone number).
+ * Mock all Firebase HTTP calls so no real network requests are made.
+ * Auth calls return canned responses; Firestore calls return mock documents.
  */
-async function mockFirestoreRoutes(page: Page) {
-  // createSession (addDoc → POST to collection) — * wildcard matches any UID
+async function mockAllFirebaseRoutes(page: Page) {
+  // Token refresh (proactive refresh + forced refresh)
+  await page.route("**/securetoken.googleapis.com/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        access_token: FAKE_ACCESS_TOKEN,
+        expires_in: "3600",
+        token_type: "Bearer",
+        refresh_token: FAKE_REFRESH_TOKEN,
+        id_token: FAKE_ACCESS_TOKEN,
+        user_id: FAKE_UID,
+        project_id: MOCK_PROJECT_ID,
+      }),
+    }),
+  );
+
+  // Account lookup (getAccountInfo — triggered on auth state restore)
+  await page.route("**/identitytoolkit.googleapis.com/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        kind: "identitytoolkit#GetAccountInfoResponse",
+        users: [
+          {
+            localId: FAKE_UID,
+            phoneNumber: FAKE_PHONE,
+            lastLoginAt: "1700000000000",
+            createdAt: "1700000000000",
+          },
+        ],
+      }),
+    }),
+  );
+
+  // createSession (addDoc → POST to collection)
   await page.route(
-    "**/firestore.googleapis.com/**/users/*/sessions",
+    `**/firestore.googleapis.com/**/users/${FAKE_UID}/sessions`,
     (route) => {
       if (route.request().method() === "POST") {
         route.fulfill({
           status: 200,
           contentType: "application/json",
           body: JSON.stringify({
-            name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/e2e-test-user/sessions/${SESSION_ID}`,
+            name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
             fields: {},
             createTime: new Date().toISOString(),
             updateTime: new Date().toISOString(),
@@ -202,12 +297,11 @@ async function mockFirestoreRoutes(page: Page) {
     },
   );
 
-  // getActiveSession uses getDocs+orderBy which sends a runQuery POST
+  // getActiveSession uses getDocs+orderBy → runQuery POST
   await page.route("**/firestore.googleapis.com/**:runQuery**", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      // Empty runQuery result: single element with only readTime = no documents
       body: JSON.stringify([{ readTime: new Date().toISOString() }]),
     }),
   );
@@ -217,13 +311,7 @@ async function mockFirestoreRoutes(page: Page) {
     `**/firestore.googleapis.com/**/${SESSION_ID}**`,
     (route) => {
       const method = route.request().method();
-      if (method === "GET") {
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MOCK_SESSION_DOC),
-        });
-      } else if (method === "PATCH" || method === "POST") {
+      if (method === "GET" || method === "PATCH" || method === "POST") {
         route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -236,31 +324,31 @@ async function mockFirestoreRoutes(page: Page) {
   );
 
   // gRPC-web Listen stream (onSnapshot)
-  await page.route("**/google.firestore.v1.Firestore/Listen**", (route) => {
+  await page.route("**/google.firestore.v1.Firestore/Listen**", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         targetChange: { targetChangeType: "CURRENT", targetIds: [] },
       }),
-    });
-  });
+    }),
+  );
 
-  // Block any remaining Firestore calls not matched above
-  await page.route("**/firestore.googleapis.com/**", (route) => route.abort());
+  // Block any remaining Firebase calls
+  await page.route("**/googleapis.com/**", (route) => route.abort());
 }
 
 // ── test ──────────────────────────────────────────────────────────────────────
 
 test.describe("Session happy-path flow", () => {
   test.beforeEach(async ({ page }) => {
-    await mockFirestoreRoutes(page);
+    await injectFirebaseAuth(page);
+    await mockAllFirebaseRoutes(page);
   });
 
   test("complete workout session flow", async ({ page }) => {
-    // ── 1. Sign in with the Firebase test account ─────────────────────────────
-    await loginWithTestAccount(page);
-    // loginWithTestAccount ends with a redirect to "/" — no extra goto needed
+    // ── 1. Navigate to home (auth injected via IndexedDB — no login UI needed)
+    await page.goto("/");
 
     // ── 2. Assert "Start Workout" button is visible ───────────────────────────
     const startBtn = page.getByRole("button", { name: /start workout/i });
@@ -296,40 +384,36 @@ test.describe("Session happy-path flow", () => {
     const confirmBtn = page.getByRole("button", { name: /kg × \d+ reps/i });
     await expect(confirmBtn).toBeVisible({ timeout: 3_000 });
 
-    // ── 10. Assert confirm button is visible with weight and reps values ───────
-    await expect(confirmBtn).toBeVisible();
-
-    // ── 11. Click confirm button ──────────────────────────────────────────────
+    // ── 10. Click confirm button ──────────────────────────────────────────────
     await confirmBtn.click();
 
-    // ── 12. Assert drawer closes ──────────────────────────────────────────────
+    // ── 11. Assert drawer closes ──────────────────────────────────────────────
     await expect(confirmBtn).not.toBeVisible({ timeout: 3_000 });
 
-    // ── 13. Assert RestTimer renders with "1:30" ──────────────────────────────
+    // ── 12. Assert RestTimer renders with "1:30" ──────────────────────────────
     await expect(page.getByText("1:30")).toBeVisible({ timeout: 3_000 });
 
-    // ── 14. Click "Skip Rest" ─────────────────────────────────────────────────
+    // ── 13. Click "Skip Rest" ─────────────────────────────────────────────────
     await page.getByRole("button", { name: /skip rest/i }).click();
 
-    // ── 15. Assert set view advances to "Set 2 of 2" ─────────────────────────
+    // ── 14. Assert set view advances to "Set 2 of 2" ─────────────────────────
     await expect(page.getByText(/Set\s+2\s+of\s+2/i)).toBeVisible({
       timeout: 3_000,
     });
 
-    // ── 16. Repeat for set 2 ──────────────────────────────────────────────────
+    // ── 15. Repeat for set 2 ──────────────────────────────────────────────────
     await page.getByRole("button", { name: /^done$/i }).click();
     const confirmBtn2 = page.getByRole("button", { name: /kg × \d+ reps/i });
     await expect(confirmBtn2).toBeVisible({ timeout: 3_000 });
     await confirmBtn2.click();
 
-    // ── 17. Assert redirect back to exercise list ─────────────────────────────
+    // ── 16. Assert redirect back to exercise list ─────────────────────────────
     await expect(page.getByText("Lateral Raises")).toBeVisible({
       timeout: 5_000,
     });
     await expect(page.getByText("Lat Pulldown")).toBeVisible();
 
-    // ── 18. Assert first exercise shows done state (CheckCircle icon / Done text) ──
-    // When all sets are logged, the exercise button becomes disabled and shows "Done"
+    // ── 17. Assert first exercise shows done state ────────────────────────────
     await expect(
       page
         .locator("button")
