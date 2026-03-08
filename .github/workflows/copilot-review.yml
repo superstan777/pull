@@ -15,9 +15,6 @@ jobs:
   request-review:
     name: Request Copilot Review
     runs-on: ubuntu-latest
-    if: |
-      startsWith(github.head_ref, 'copilot/') ||
-      startsWith(github.head_ref, 'Copilot/')
     steps:
       - name: Request review from Copilot
         env:

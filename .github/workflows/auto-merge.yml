@@ -10,19 +10,26 @@ permissions:
   pull-requests: write
 
 jobs:
+  debug:
+    name: Log Review Event Values
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print event details
+        run: |
+          echo "Review state:    ${{ github.event.review.state }}"
+          echo "Reviewer login:  ${{ github.event.review.user.login }}"
+          echo "Branch:          ${{ github.event.pull_request.head.ref }}"
+
   merge:
     name: Merge When CI Green and Review Approved
     runs-on: ubuntu-latest
     if: >
       github.event.review.state == 'approved' &&
       (
-        startsWith(github.event.pull_request.head.ref, 'copilot/') ||
-        startsWith(github.event.pull_request.head.ref, 'Copilot/')
-      ) &&
-      (
         github.event.review.user.login == 'copilot[bot]' ||
         github.event.review.user.login == 'Copilot' ||
-        github.event.review.user.login == 'github-copilot[bot]'
+        github.event.review.user.login == 'github-copilot[bot]' ||
+        github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
       )
     steps:
       - name: Wait for CI checks and merge
