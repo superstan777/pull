@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { LogSetDrawer } from "./LogSetDrawer";
 
 const defaultProps = {
@@ -38,12 +37,10 @@ describe("LogSetDrawer", () => {
     ).toBeInTheDocument();
   });
 
-  it("clicking confirm calls onConfirm with correct values", async () => {
+  it("clicking confirm calls onConfirm with correct values", () => {
     const onConfirm = vi.fn();
     render(<LogSetDrawer {...defaultProps} onConfirm={onConfirm} />);
-    await userEvent.click(
-      screen.getByRole("button", { name: /60 kg × 10 reps/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /60 kg × 10 reps/i }));
     expect(onConfirm).toHaveBeenCalledWith(60, 10);
   });
 
