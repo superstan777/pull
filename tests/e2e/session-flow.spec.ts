@@ -234,24 +234,17 @@ async function injectFirebaseAuth(page: Page) {
 /**
  * Mock all Firebase HTTP calls so no real network requests are made.
  * Auth calls return canned responses; Firestore calls return mock documents.
+ *
+ * IMPORTANT — Playwright matches routes LIFO (last registered = highest
+ * priority).  The catch-all abort must be registered FIRST so that every
+ * specific mock registered afterwards overrides it for its own pattern.
  */
 async function mockAllFirebaseRoutes(page: Page) {
-  // Token refresh (proactive refresh + forced refresh)
-  await page.route("**/securetoken.googleapis.com/**", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        access_token: FAKE_ACCESS_TOKEN,
-        expires_in: "3600",
-        token_type: "Bearer",
-        refresh_token: FAKE_REFRESH_TOKEN,
-        id_token: FAKE_ACCESS_TOKEN,
-        user_id: FAKE_UID,
-        project_id: MOCK_PROJECT_ID,
-      }),
-    }),
-  );
+  // ── Catch-all (lowest priority — registered first) ────────────────────────
+  // Block any Firebase call not explicitly handled below.
+  await page.route("**/googleapis.com/**", (route) => route.abort());
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
 
   // Account lookup (getAccountInfo — triggered on auth state restore)
   await page.route("**/identitytoolkit.googleapis.com/**", (route) =>
@@ -272,29 +265,34 @@ async function mockAllFirebaseRoutes(page: Page) {
     }),
   );
 
-  // createSession (addDoc → POST to collection)
-  await page.route(
-    `**/firestore.googleapis.com/**/users/${FAKE_UID}/sessions`,
-    (route) => {
-      if (route.request().method() === "POST") {
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
-            fields: {},
-            createTime: new Date().toISOString(),
-            updateTime: new Date().toISOString(),
-          }),
-        });
-      } else {
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ documents: [] }),
-        });
-      }
-    },
+  // Token refresh (proactive refresh + forced refresh)
+  await page.route("**/securetoken.googleapis.com/**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        access_token: FAKE_ACCESS_TOKEN,
+        expires_in: "3600",
+        token_type: "Bearer",
+        refresh_token: FAKE_REFRESH_TOKEN,
+        id_token: FAKE_ACCESS_TOKEN,
+        user_id: FAKE_UID,
+        project_id: MOCK_PROJECT_ID,
+      }),
+    }),
+  );
+
+  // ── Firestore ─────────────────────────────────────────────────────────────
+
+  // gRPC-web Listen stream (onSnapshot)
+  await page.route("**/google.firestore.v1.Firestore/Listen**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        targetChange: { targetChangeType: "CURRENT", targetIds: [] },
+      }),
+    }),
   );
 
   // getActiveSession uses getDocs+orderBy → runQuery POST
@@ -323,19 +321,30 @@ async function mockAllFirebaseRoutes(page: Page) {
     },
   );
 
-  // gRPC-web Listen stream (onSnapshot)
-  await page.route("**/google.firestore.v1.Firestore/Listen**", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        targetChange: { targetChangeType: "CURRENT", targetIds: [] },
-      }),
-    }),
+  // createSession (addDoc → POST to collection) — highest priority, registered last
+  await page.route(
+    `**/firestore.googleapis.com/**/users/${FAKE_UID}/sessions`,
+    (route) => {
+      if (route.request().method() === "POST") {
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
+            fields: {},
+            createTime: new Date().toISOString(),
+            updateTime: new Date().toISOString(),
+          }),
+        });
+      } else {
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ documents: [] }),
+        });
+      }
+    },
   );
-
-  // Block any remaining Firebase calls
-  await page.route("**/googleapis.com/**", (route) => route.abort());
 }
 
 // ── test ──────────────────────────────────────────────────────────────────────
