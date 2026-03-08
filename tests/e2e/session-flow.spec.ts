@@ -2,36 +2,39 @@
  * E2E session flow test — happy path
  *
  * Auth strategy:
- *   1. page.addInitScript():
- *      - Pre-populate Firebase's IndexedDB auth store with a fake user payload
- *      - Ensures onAuthStateChanged fires with the test user on app load
- *   2. page.route():
- *      - Intercept securetoken.googleapis.com (token refresh)
- *      - Intercept identitytoolkit.googleapis.com (account lookup)
- *      - Intercept firestore.googleapis.com (Firestore reads / writes / listen)
+ *   Real Firebase phone auth using the dedicated E2E test account:
+ *     Phone : +48500500500
+ *     OTP   : 500500  (static code configured in Firebase Console → Auth → Test phone numbers)
+ *
+ *   The test goes through the actual login UI so the phone-auth flow is
+ *   covered end-to-end.  reCAPTCHA is set to invisible size; Firebase
+ *   test phone numbers bypass real SMS and skip the reCAPTCHA challenge.
+ *
+ * Firestore strategy:
+ *   All Firestore endpoints are intercepted via page.route() so no real data
+ *   is written to the production database.
  *
  * The app is started via playwright.config.ts webServer (npm run dev).
- * Requires .env.test to be loaded so Firebase initialises with fake credentials.
+ * Real Firebase credentials are loaded from .env.local locally and from
+ * GitHub Actions secrets in CI.
  */
 
 import { test, expect, type Page } from "@playwright/test";
 
-// ── constants shared between fixtures ────────────────────────────────────────
+// ── constants ─────────────────────────────────────────────────────────────────
 
-const FAKE_API_KEY = "test-api-key";
-const FAKE_PROJECT_ID = "test-project";
-const FAKE_UID = "test-user-123";
-const FAKE_PHONE = "+15550000000";
+/** Firebase test phone number configured in Firebase Console */
+const TEST_PHONE = "+48500500500";
+/** Static OTP paired with TEST_PHONE in Firebase Console */
+const TEST_OTP = "500500";
+
 const SESSION_ID = "test-session-id";
-
-const FAKE_ACCESS_TOKEN = "fake-access-token-xyz";
-const FAKE_REFRESH_TOKEN = "fake-refresh-token-xyz";
-const TOKEN_EXPIRY = Date.now() + 3600 * 1000;
+const MOCK_PROJECT_ID = "pull-3d186";
 
 // ── Firestore mock documents ──────────────────────────────────────────────────
 
 const MOCK_SESSION_DOC = {
-  name: `projects/${FAKE_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
+  name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/e2e-test-user/sessions/${SESSION_ID}`,
   fields: {
     planId: { stringValue: "mock-plan-v1" },
     planName: { stringValue: "Push Day" },
@@ -153,125 +156,43 @@ const MOCK_SESSION_DOC = {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Inject the fake Firebase auth user into IndexedDB so that
- * onAuthStateChanged fires with the test user immediately on page load.
+ * Sign in through the login UI using the Firebase test phone account.
+ * Firebase test phone numbers bypass real SMS; the static OTP is accepted
+ * server-side without a reCAPTCHA challenge (invisible reCAPTCHA + test number).
+ * After successful login the page is redirected to "/".
  */
-async function injectFirebaseAuth(page: Page) {
-  await page.addInitScript(
-    ([uid, phone, apiKey, accessToken, refreshToken, expiryTime]) => {
-      // Firebase v9 persists auth state in IndexedDB
-      const AUTH_KEY = `firebase:authUser:${apiKey}:[DEFAULT]`;
-      const fakeUser = {
-        uid,
-        phoneNumber: phone,
-        isAnonymous: false,
-        emailVerified: false,
-        providerData: [
-          {
-            providerId: "phone",
-            uid: phone,
-            displayName: null,
-            email: null,
-            phoneNumber: phone,
-            photoURL: null,
-          },
-        ],
-        stsTokenManager: {
-          refreshToken,
-          accessToken,
-          expirationTime: expiryTime,
-        },
-        createdAt: "1700000000000",
-        lastLoginAt: "1700000000000",
-        appName: "[DEFAULT]",
-        apiKey,
-      };
-
-      // Pre-populate IndexedDB before Firebase SDK initialises
-      const req = indexedDB.open("firebaseLocalStorageDb", 1);
-      req.onupgradeneeded = (e) => {
-        const db = (e.target as IDBOpenDBRequest).result;
-        if (!db.objectStoreNames.contains("firebaseLocalStorage")) {
-          db.createObjectStore("firebaseLocalStorage", {
-            keyPath: "fbase_key",
-          });
-        }
-      };
-      req.onsuccess = (e) => {
-        const db = (e.target as IDBOpenDBRequest).result;
-        const tx = db.transaction("firebaseLocalStorage", "readwrite");
-        const store = tx.objectStore("firebaseLocalStorage");
-        store.put({ fbase_key: AUTH_KEY, value: JSON.stringify(fakeUser) });
-      };
-    },
-    [
-      FAKE_UID,
-      FAKE_PHONE,
-      FAKE_API_KEY,
-      FAKE_ACCESS_TOKEN,
-      FAKE_REFRESH_TOKEN,
-      TOKEN_EXPIRY,
-    ] as const,
-  );
+async function loginWithTestAccount(page: Page) {
+  await page.goto("/login");
+  await page.getByLabel(/phone number/i).fill(TEST_PHONE);
+  await page.getByRole("button", { name: /send code/i }).click();
+  await page.getByLabel(/verification code/i).waitFor({ timeout: 15_000 });
+  await page.getByLabel(/verification code/i).fill(TEST_OTP);
+  await page.getByRole("button", { name: /^verify$/i }).click();
+  await page.waitForURL("/", { timeout: 15_000 });
 }
 
 /**
- * Set up page.route() handlers to intercept all Firebase HTTP calls.
+ * Intercept all Firestore endpoints so no real data is written to the
+ * production database.  Firebase Auth requests pass through to the real
+ * Firebase project (real credentials + test phone number).
  */
-async function mockFirebaseRoutes(page: Page) {
-  // Token refresh
-  await page.route("**/securetoken.googleapis.com/**", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        access_token: FAKE_ACCESS_TOKEN,
-        expires_in: "3600",
-        token_type: "Bearer",
-        refresh_token: FAKE_REFRESH_TOKEN,
-        id_token: FAKE_ACCESS_TOKEN,
-        user_id: FAKE_UID,
-        project_id: FAKE_PROJECT_ID,
-      }),
-    }),
-  );
-
-  // Account lookup (getAccount)
-  await page.route("**/identitytoolkit.googleapis.com/**", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        kind: "identitytoolkit#GetAccountInfoResponse",
-        users: [
-          {
-            localId: FAKE_UID,
-            phoneNumber: FAKE_PHONE,
-            lastLoginAt: "1700000000000",
-            createdAt: "1700000000000",
-          },
-        ],
-      }),
-    }),
-  );
-
-  // Firestore: createSession (addDoc → POST to collection)
+async function mockFirestoreRoutes(page: Page) {
+  // createSession (addDoc → POST to collection) — * wildcard matches any UID
   await page.route(
-    `**/firestore.googleapis.com/**/users/${FAKE_UID}/sessions`,
+    "**/firestore.googleapis.com/**/users/*/sessions",
     (route) => {
       if (route.request().method() === "POST") {
         route.fulfill({
           status: 200,
           contentType: "application/json",
           body: JSON.stringify({
-            name: `projects/${FAKE_PROJECT_ID}/databases/(default)/documents/users/${FAKE_UID}/sessions/${SESSION_ID}`,
+            name: `projects/${MOCK_PROJECT_ID}/databases/(default)/documents/users/e2e-test-user/sessions/${SESSION_ID}`,
             fields: {},
             createTime: new Date().toISOString(),
             updateTime: new Date().toISOString(),
           }),
         });
       } else {
-        // GET (getDocs for active session check)
         route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -281,7 +202,17 @@ async function mockFirebaseRoutes(page: Page) {
     },
   );
 
-  // Firestore: session document reads/writes and listen stream
+  // getActiveSession uses getDocs+orderBy which sends a runQuery POST
+  await page.route("**/firestore.googleapis.com/**:runQuery**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      // Empty runQuery result: single element with only readTime = no documents
+      body: JSON.stringify([{ readTime: new Date().toISOString() }]),
+    }),
+  );
+
+  // Session document reads (GET) and writes (PATCH / updateDoc)
   await page.route(
     `**/firestore.googleapis.com/**/${SESSION_ID}**`,
     (route) => {
@@ -293,7 +224,6 @@ async function mockFirebaseRoutes(page: Page) {
           body: JSON.stringify(MOCK_SESSION_DOC),
         });
       } else if (method === "PATCH" || method === "POST") {
-        // updateDoc / listen
         route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -305,7 +235,7 @@ async function mockFirebaseRoutes(page: Page) {
     },
   );
 
-  // Firestore gRPC-web Listen stream (onSnapshot)
+  // gRPC-web Listen stream (onSnapshot)
   await page.route("**/google.firestore.v1.Firestore/Listen**", (route) => {
     route.fulfill({
       status: 200,
@@ -316,21 +246,21 @@ async function mockFirebaseRoutes(page: Page) {
     });
   });
 
-  // Catch-all: block remaining Firebase calls
-  await page.route("**/googleapis.com/**", (route) => route.abort());
+  // Block any remaining Firestore calls not matched above
+  await page.route("**/firestore.googleapis.com/**", (route) => route.abort());
 }
 
 // ── test ──────────────────────────────────────────────────────────────────────
 
 test.describe("Session happy-path flow", () => {
   test.beforeEach(async ({ page }) => {
-    await injectFirebaseAuth(page);
-    await mockFirebaseRoutes(page);
+    await mockFirestoreRoutes(page);
   });
 
   test("complete workout session flow", async ({ page }) => {
-    // ── 1. Navigate to home ───────────────────────────────────────────────────
-    await page.goto("/");
+    // ── 1. Sign in with the Firebase test account ─────────────────────────────
+    await loginWithTestAccount(page);
+    // loginWithTestAccount ends with a redirect to "/" — no extra goto needed
 
     // ── 2. Assert "Start Workout" button is visible ───────────────────────────
     const startBtn = page.getByRole("button", { name: /start workout/i });
