@@ -16,6 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.label.name == 'copilot'
     steps:
+      - name: Ensure labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create copilot --repo ${{ github.repository }} --color 0075ca --description "Ready for Copilot" 2>/dev/null || true
+          gh label create queued  --repo ${{ github.repository }} --color e4e669 --description "Waiting for current PR to merge" 2>/dev/null || true
+
       - name: Check for open Copilot PR
         id: check_pr
         env:
