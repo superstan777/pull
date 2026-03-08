@@ -94,16 +94,18 @@ jobs:
           HEAD=${{ github.event.pull_request.head.sha }}
 
           # All changed .tsx/.ts files (excluding ui/, tests, node_modules)
+          # || true prevents grep returning exit 1 (no matches) from killing the
+          # script under bash -e when a PR touches no .ts/.tsx files at all.
           CHANGED=$(git diff --name-only "$BASE" "$HEAD" \
             | grep -E '\.(tsx|ts)$' \
             | grep -v 'components/ui/' \
             | grep -v '/index\.ts' \
             | grep -v '\.test\.' \
             | grep -v '\.spec\.' \
-            | grep -v 'node_modules/')
+            | grep -v 'node_modules/' || true)
 
           # components/, hooks/, app/, lib/ require .md — types/ is exempt (pure type defs)
-          NEED_DOCS=$(echo "$CHANGED" | grep -E '^(components|hooks|app|lib)/' | grep -v 'components/ui/')
+          NEED_DOCS=$(echo "$CHANGED" | grep -E '^(components|hooks|app|lib)/' | grep -v 'components/ui/' || true)
 
           MISSING=""
           for f in $NEED_DOCS; do
