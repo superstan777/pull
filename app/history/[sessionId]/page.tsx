@@ -7,6 +7,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { LoadingSpinner } from "@/components/LoadingSpinner";
 import { useAuth } from "@/hooks/useAuth";
 import { getSession, Session } from "@/lib/firestore";
 import { formatDate, formatDuration } from "@/lib/timeUtils";
@@ -50,11 +51,7 @@ function SessionDetailContent({ sessionId }: { sessionId: string }) {
 
       <main className="mx-auto w-full max-w-120 px-4 py-4 space-y-4">
         {loading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-40 rounded-xl bg-muted animate-pulse" />
-            ))}
-          </div>
+          <LoadingSpinner />
         ) : !session ? (
           <p className="text-center text-muted-foreground py-16">
             Session not found.

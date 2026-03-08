@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { Timestamp } from "firebase/firestore";
 import { ExerciseListView } from "@/components/ExerciseListView";
 import { ExerciseSetView } from "@/components/ExerciseSetView";
+import { LoadingSpinner } from "@/components/LoadingSpinner";
 import type { ViewState, SetDrawerConfig } from "@/types/session";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -130,13 +131,7 @@ function SessionContent({ sessionId }: { sessionId: string }) {
   // ─── loading / error ───────────────────────────────────────────────────────
 
   if (loading) {
-    return (
-      <div className="space-y-3 p-4 max-w-120 mx-auto">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-20 rounded-xl bg-muted animate-pulse" />
-        ))}
-      </div>
-    );
+    return <LoadingSpinner />;
   }
 
   if (!session) {
