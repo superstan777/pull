@@ -304,26 +304,10 @@ async function mockAllFirebaseRoutes(page: Page) {
     }),
   );
 
-  // Session document reads (GET) and writes (PATCH / updateDoc)
+  // createSession (addDoc → POST to collection) — registered before session doc
+  // Trailing ** required: Firestore REST appends ?key=<apiKey> to every URL.
   await page.route(
-    `**/firestore.googleapis.com/**/${SESSION_ID}**`,
-    (route) => {
-      const method = route.request().method();
-      if (method === "GET" || method === "PATCH" || method === "POST") {
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify(MOCK_SESSION_DOC),
-        });
-      } else {
-        route.continue();
-      }
-    },
-  );
-
-  // createSession (addDoc → POST to collection) — highest priority, registered last
-  await page.route(
-    `**/firestore.googleapis.com/**/users/${FAKE_UID}/sessions`,
+    `**/firestore.googleapis.com/**/users/${FAKE_UID}/sessions**`,
     (route) => {
       if (route.request().method() === "POST") {
         route.fulfill({
@@ -342,6 +326,25 @@ async function mockAllFirebaseRoutes(page: Page) {
           contentType: "application/json",
           body: JSON.stringify({ documents: [] }),
         });
+      }
+    },
+  );
+
+  // Session document reads (GET) and writes (PATCH / updateDoc).
+  // Registered LAST = highest priority, overrides the sessions collection
+  // pattern above for URLs that contain the session ID.
+  await page.route(
+    `**/firestore.googleapis.com/**/${SESSION_ID}**`,
+    (route) => {
+      const method = route.request().method();
+      if (method === "GET" || method === "PATCH" || method === "POST") {
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MOCK_SESSION_DOC),
+        });
+      } else {
+        route.continue();
       }
     },
   );
