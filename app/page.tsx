@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Dumbbell, LogOut, Clock, ArrowRight, History } from "lucide-react";
-import Link from "next/link";
+import { Dumbbell, LogOut, Clock, ArrowRight } from "lucide-react";
 import { AuthGuard } from "@/components/AuthGuard";
 import { BottomNav } from "@/components/BottomNav";
+import { LoadingSpinner } from "@/components/LoadingSpinner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -86,9 +86,7 @@ function HomeContent() {
 
       <main className="flex-1 mx-auto w-full max-w-120 px-4 py-6 space-y-6">
         {loadingSession ? (
-          <div className="space-y-3">
-            <div className="h-28 rounded-xl bg-muted animate-pulse" />
-          </div>
+          <LoadingSpinner />
         ) : activeSession ? (
           <Card className="border-primary/40">
             <CardContent className="p-4 space-y-4">
@@ -129,15 +127,6 @@ function HomeContent() {
           </Button>
         )}
 
-        <div className="text-center">
-          <Link
-            href="/history"
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <History className="h-4 w-4" />
-            View History
-          </Link>
-        </div>
       </main>
 
       <BottomNav />
