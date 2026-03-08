@@ -41,6 +41,9 @@ jobs:
             --repo ${{ github.repository }} \
             --remove-label queued \
             --add-label copilot
+          gh issue edit ${{ steps.find_issue.outputs.issue_number }} \
+            --repo ${{ github.repository }} \
+            --add-assignee "@copilot"
           gh issue comment ${{ steps.find_issue.outputs.issue_number }} \
             --repo ${{ github.repository }} \
             --body "Previous PR merged. Copilot has been assigned to this issue."
