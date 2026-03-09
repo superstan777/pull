@@ -1,0 +1,25 @@
+name: Issue Webhook
+
+on:
+  issues:
+    types:
+      - opened
+      - closed
+
+permissions: {}
+
+jobs:
+  notify-bot:
+    name: Notify VPS Bot
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST to bot
+        run: |
+          curl -s -X POST "${{ secrets.BOT_WEBHOOK_URL }}/issue" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${{ secrets.BOT_WEBHOOK_SECRET }}" \
+            -d "{
+              \"action\": \"${{ github.event.action }}\",
+              \"issue_number\": ${{ github.event.issue.number }},
+              \"repo\": \"${{ github.repository }}\"
+            }"

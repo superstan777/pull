@@ -1,6 +1,6 @@
 # Automation Flow
 
-Full end-to-end pipeline from idea to deployed code.
+Full end-to-end pipeline from idea to deployed code — zero manual steps.
 
 ---
 
@@ -13,7 +13,7 @@ Manager (Telegram)
     ▼
 VPS Bot
     │
-    │  creates GitHub Issue [label: draft]
+    │  creates GitHub Issue
     ▼
 LLM (GitHub Models API)
     │
@@ -23,9 +23,17 @@ LLM (GitHub Models API)
     ▼
 GitHub Issue comments ◄──► Telegram (bidirectional via webhooks)
     │
-    │  LLM satisfied: removes label draft, adds label copilot
+    │  LLM satisfied: updates Issue body with final description
     ▼
-GitHub Action: auto-assign Copilot Agent
+GitHub Action: issue opened → POST /issue to VPS Bot
+    │
+    ▼
+VPS Bot (queue manager)
+    │
+    ├── no active issue → Playwright clicks "Assign to Copilot"
+    │                     marks issue as active in local state
+    │
+    └── issue already active → adds to internal queue
     │
     ▼
 Copilot Agent
@@ -50,29 +58,36 @@ Copilot Review Agent
     │
     ▼
 Vercel: auto-deploy on merge to main
+    │
+    ▼
+GitHub Action: issue closed → POST /issue to VPS Bot
+    │
+    ▼
+VPS Bot: dequeues next issue → Playwright clicks "Assign to Copilot"
 ```
 
 ---
 
 ## Task Queue
 
-Only **one active Copilot PR** at a time — no merge conflicts.
+Only **one active Copilot issue** at a time — no merge conflicts.
 
-| State           | Label        | Behaviour                                     |
-| --------------- | ------------ | --------------------------------------------- |
-| Being clarified | `draft`      | LLM ↔ Manager loop active                     |
-| Ready to start  | `copilot`    | Copilot Agent assigned immediately            |
-| Waiting         | `queued`     | Active PR already open; starts after merge    |
-| Blocked         | `needs-info` | Copilot asked a question; waiting for Manager |
+Queue state is managed entirely by the VPS bot — no GitHub labels involved.
 
-When a PR is merged, GitHub Action scans for the oldest `queued` issue and promotes it to `copilot`.
+| Bot state  | Meaning                                     |
+| ---------- | ------------------------------------------- |
+| `active`   | Copilot assigned, PR in progress            |
+| `queued`   | Waiting; will start when active issue closes |
+
+When an issue is closed, the bot automatically picks the oldest queued issue
+and clicks "Assign to Copilot" — no human action required.
 
 ---
 
 ## Clarification Loop (detail)
 
 ```
-Issue created [draft]
+Issue created
     │
     ▼
 LLM analyses:
@@ -103,8 +118,7 @@ LLM analyses:
 
 Issue ready:
     - LLM updates Issue body with final, complete description
-    - Removes label: draft
-    - Adds label: copilot
+    - VPS Bot triggers Playwright "Assign to Copilot" (or queues if one active)
 ```
 
 ---
@@ -117,26 +131,29 @@ Issue ready:
 - [ ] First unit tests (ScrollPicker, RestTimer, LogSetDrawer)
 - [ ] Playwright E2E setup + smoke test (session flow with mocked Firebase)
 - [ ] GitHub Actions CI workflow (build + test + docs check)
-- [ ] `docs/patterns/` — base pattern files
 - [ ] Co-located `.md` for all existing components and hooks
 - [ ] `.github/copilot-instructions.md` ✅
 
 ### Etap 2 — GitHub Automation
 
-- [ ] Action: auto-assign Copilot when issue gets label `copilot`
-- [ ] Action: task queue — label `queued` when PR already open
-- [ ] Action: promote oldest `queued` issue after PR merge
-- [ ] Action: auto-request Copilot review on Copilot PRs
-- [ ] Action: auto-merge when CI green + review approved
+- [ ] VPS Bot: webhook server (Express, Node.js)
+- [ ] VPS Bot: Playwright session — login + "Assign to Copilot" click
+- [ ] VPS Bot: internal queue (active issue + FIFO queue, persisted to disk)
+- [ ] VPS Bot: `/issue` endpoint — handles `opened` and `closed` events
+- [ ] Action: `issue-webhook.yml` ✅ — POSTs to VPS bot on issue open/close
+- [ ] Action: auto-request Copilot review on ready PR ✅
+- [ ] Action: auto-merge when CI green + review approved ✅
+- [ ] Action: convert draft PR to ready (pr-ready.yml) ✅
+- [ ] Action: CI (build + test + docs check) ✅
 
 ### Etap 3 — Bot (Telegram ↔ GitHub ↔ LLM)
 
-- [ ] VPS bot server (Node.js + Telegraf)
-- [ ] Telegram → GitHub Draft Issue
+- [ ] Telegram bot (Telegraf)
+- [ ] Telegram → GitHub Issue (bot creates issue via API)
 - [ ] GitHub webhook → Telegram (issue comments forwarded)
 - [ ] Telegram reply → GitHub Issue comment
 - [ ] LLM clarification loop (GitHub Models API, max 3 rounds)
-- [ ] LLM updates Issue body + swaps labels when ready
+- [ ] LLM updates Issue body when ready, signals VPS bot to proceed
 
 ---
 
