@@ -74,10 +74,10 @@ Only **one active Copilot issue** at a time — no merge conflicts.
 
 Queue state is managed entirely by the VPS bot — no GitHub labels involved.
 
-| Bot state  | Meaning                                     |
-| ---------- | ------------------------------------------- |
-| `active`   | Copilot assigned, PR in progress            |
-| `queued`   | Waiting; will start when active issue closes |
+| Bot state | Meaning                                      |
+| --------- | -------------------------------------------- |
+| `active`  | Copilot assigned, PR in progress             |
+| `queued`  | Waiting; will start when active issue closes |
 
 When an issue is closed, the bot automatically picks the oldest queued issue
 and clicks "Assign to Copilot" — no human action required.
