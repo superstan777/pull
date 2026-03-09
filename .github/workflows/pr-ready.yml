@@ -1,0 +1,47 @@
+name: Mark Copilot PR Ready
+
+on:
+  pull_request:
+    types:
+      - synchronize
+      - opened
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  debug:
+    name: Log Push Actor
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == true
+    steps:
+      - name: Print actor details
+        run: |
+          echo "Actor:     ${{ github.actor }}"
+          echo "Actor ID:  ${{ github.actor_id }}"
+          echo "PR draft:  ${{ github.event.pull_request.draft }}"
+          echo "PR number: ${{ github.event.pull_request.number }}"
+
+  mark-ready:
+    name: Convert Draft to Ready When Copilot Pushes
+    runs-on: ubuntu-latest
+    if: >
+      github.event.pull_request.draft == true &&
+      (
+        github.actor == 'copilot-swe-agent[bot]' ||
+        github.actor == 'copilot-swe-agent' ||
+        github.actor == 'Copilot' ||
+        github.actor == 'github-copilot[bot]'
+      )
+    steps:
+      - name: Mark PR as ready for review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Actor: ${{ github.actor }}"
+          echo "PR draft: ${{ github.event.pull_request.draft }}"
+          echo "PR number: ${{ github.event.pull_request.number }}"
+          gh pr ready ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }}
+          echo "PR marked as ready for review"
