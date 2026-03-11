@@ -36,7 +36,7 @@ jobs:
     steps:
       - name: Mark PR as ready for review
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           echo "Actor: ${{ github.actor }}"
           echo "PR draft: ${{ github.event.pull_request.draft }}"
