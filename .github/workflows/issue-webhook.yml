@@ -14,8 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: POST to bot
+        env:
+          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
+          BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
         run: |
-          curl -s -X POST "${{ secrets.BOT_WEBHOOK_URL }}/issue" \
+          curl -sf -X POST "${BOT_WEBHOOK_URL}/issue" \
             -H "Content-Type: application/json" \
-            -H "X-Webhook-Secret: ${{ secrets.BOT_WEBHOOK_SECRET }}" \
+            -H "X-Webhook-Secret: ${BOT_WEBHOOK_SECRET}" \
             -d '{"action":"${{ github.event.action }}","issue_number":${{ github.event.issue.number }},"repo":"${{ github.repository }}"}'
