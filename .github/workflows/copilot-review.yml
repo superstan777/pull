@@ -13,6 +13,8 @@ jobs:
   request-review:
     name: Request Copilot Review
     runs-on: ubuntu-latest
+    if: >
+      !contains(github.event.pull_request.requested_reviewers.*.login, 'copilot[bot]')
     steps:
       - name: Request review from Copilot
         env:
