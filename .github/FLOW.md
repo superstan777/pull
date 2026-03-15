@@ -1,8 +1,15 @@
 # Automation Flow
 
-## Etap 1 — MVP (Current, Simplified)
+## Stage 1 — MVP (Current)
 
-Stripped-down workflow: **Issue → Bot assigns Copilot → Copilot codes → CI → Review → Merge**
+**Issue → Bot assigns Copilot → Copilot codes → Bot marks ready → CI → Review → Merge**
+
+### Responsibility Split
+
+| Actor                    | Responsible for                                                                                                                                                                   |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **VPS Bot (Playwright)** | Everything that requires a click as a human user: assign Copilot, mark PR ready. GitHub tokens cannot modify PRs owned by the Copilot bot — Playwright bypasses this restriction. |
+| **GitHub Actions**       | Reacting to events: CI (build/test/docs), request review, auto-merge. Stateless and clean.                                                                                        |
 
 ```
 1. Engineer creates Issue on GitHub
@@ -12,116 +19,110 @@ Stripped-down workflow: **Issue → Bot assigns Copilot → Copilot codes → CI
 3. VPS Bot (queue manager)
     ├── if no active issue
     │   ├── Playwright: clicks "Assign to Copilot"
-    │   ├── marks issue as active
-    │   └── triggers Copilot workflow
+    │   └── marks issue as active
     │
     └── if active issue exists
         └── enqueues (FIFO, persisted to disk)
     ↓
 4. Copilot Agent
-    ├── creates draft PR (branch off issue number)
+    ├── creates draft PR with [WIP] title
     ├── commits code + tests + .md docs
-    └── pushes to GitHub
+    └── changes PR title from [WIP] → final title when done
     ↓
-5. GitHub Actions (pr-ready.yml)
-    ├── detects Copilot as author + draft mode
-    ├── converts draft → ready for review
-    └── emits ready_for_review event
-    ↓
+5. GitHub webhook (pull_request: edited) → VPS Bot
+    ├── detects title no longer starts with [WIP]
+    └── Playwright: clicks "Ready for review" on PR page
+    ↓  (GitHub emits ready_for_review event)
 6. GitHub Actions (ci.yml) triggers on ready_for_review
     ├── npm run build
     ├── npm test (Vitest)
     ├── npm run test:e2e (Playwright)
     └── docs check (every .tsx/.ts has updated .md)
+    ↓  (CI passes → workflow_run: completed)
+7. GitHub Actions (copilot-review.yml) triggers on CI success
+    └── requests review from Copilot reviewer
+    ↓  (Copilot approves)
+8. GitHub Actions (auto-merge.yml) triggers on approval
+    ├── gh pr checks --watch (safety net)
+    ├── squash-merges PR + deletes branch
+    └── Vercel auto-deploys on merge to main
     ↓
-7. GitHub Actions (copilot-review.yml) triggers when CI passes
-    ├── requests review from Copilot reviewer
-    ↓
-8. GitHub Actions (auto-merge.yml) triggers on Copilot approval
-    ├── waits for CI to be green
-    ├── squash-merges PR
-    └── (Vercel auto-deploys on merge to main)
-    ↓
-9. GitHub Action (issue-webhook.yml) triggers on PR merge
-    ├── POSTs closure event to VPS Bot
+9. GitHub Action (issue-webhook.yml) triggers on PR merge / issue close
     └── Bot dequeues next issue → loops to step 3
-
 ```
 
-### Key Mechanisms (MVP)
+### Status
 
-| Step | What               | How                                                 | Status             |
-| ---- | ------------------ | --------------------------------------------------- | ------------------ |
-| 2    | Issue webhook      | `issue-webhook.yml` — POST on issue opened + closed | ✅                 |
-| 3    | Bot queue + assign | VPS bot + Playwright (always online)                | TODO               |
-| 4    | Copilot codes      | Copilot Agent connected to GitHub issue             | ✅                 |
-| 5    | Draft→Ready auto   | `pr-ready.yml` on opened (no sync turbo)            | TODO (fix trigger) |
-| 6    | CI checks          | `ci.yml` on ready_for_review only                   | TODO (fix trigger) |
-| 7    | Request review     | `copilot-review.yml` request Copilot reviewer       | ✅                 |
-| 8    | Merge auto         | `auto-merge.yml` on approved review                 | ✅                 |
+| Step | What                              | Who                                                 | Status          |
+| ---- | --------------------------------- | --------------------------------------------------- | --------------- |
+| 2    | Issue webhook                     | `issue-webhook.yml`                                 | ✅              |
+| 3    | Bot queue + assign Copilot        | VPS Bot + Playwright                                | TODO            |
+| 4    | Copilot codes                     | Copilot Agent                                       | ✅              |
+| 5    | Watch [WIP] title → mark PR ready | VPS Bot + Playwright                                | TODO            |
+| 6    | CI checks                         | `ci.yml` on `ready_for_review`                      | ✅              |
+| 7    | Request Copilot review            | `copilot-review.yml` on CI success (`workflow_run`) | ✅              |
+| 8    | Auto-merge on approval            | `auto-merge.yml`                                    | ✅              |
+| 9    | Dequeue next issue                | `issue-webhook.yml` + VPS Bot                       | TODO (bot side) |
+
+### Why Bot handles draft→ready (not Actions)
+
+GitHub Actions tokens (`GITHUB_TOKEN`, PAT) cannot call `markPullRequestReadyForReview`
+on PRs created by the Copilot bot — GitHub blocks this at the API level regardless of
+permission scope. Playwright running as a logged-in user bypasses this restriction entirely.
 
 ---
 
-## MVP Fixes
+## Bot Webhook Events
 
-### Problem 1: Duplicate CI runs
+The bot must listen for these GitHub webhook events:
 
-**Current:** `ci.yml` triggers on `ready_for_review` + `synchronize`  
-**Issue:** Every Copilot push re-runs CI  
-**Fix:** Trigger ONLY on `ready_for_review`
+| Event                           | Condition                         | Action                                |
+| ------------------------------- | --------------------------------- | ------------------------------------- |
+| `issues: opened`                | no active issue                   | Playwright: click "Assign to Copilot" |
+| `issues: opened`                | active issue exists               | enqueue                               |
+| `pull_request: edited`          | title changed, no longer `[WIP]*` | Playwright: click "Ready for review"  |
+| `pull_request: closed` (merged) | —                                 | dequeue next issue, assign Copilot    |
 
-```yaml
-on:
-  pull_request:
-    types:
-      - ready_for_review
-```
+---
 
-### Problem 2: pr-ready.yml turbo re-triggering
+## Task Queue
 
-**Current:** `pr-ready.yml` triggers on `opened` + `synchronize`  
-**Issue:** After converting draft→ready, if a new commit lands, unnecessary job runs  
-**Fix:** Trigger ONLY on `opened`
+Only **one active Copilot issue** at a time — no merge conflicts.
 
-```yaml
-on:
-  pull_request:
-    types:
-      - opened
-```
+Queue state managed entirely by the VPS bot (persisted to disk).
 
-### Problem 3: No concurrency control
+| Bot state | Meaning                                  |
+| --------- | ---------------------------------------- |
+| `active`  | Copilot assigned, PR in progress         |
+| `queued`  | Waiting; starts when active issue closes |
 
-**Problem:** Multiple CI runs can happen simultaneously (resource waste, race conditions on merge)  
-**Fix:** Add `concurrency` to ci.yml (cancel older run when new one lands)
+---
 
-```yaml
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-```
+## Components to Build
 
-### Problem 4: Review request fires on every ready_for_review
+### VPS Bot (Node.js + Express + Playwright)
 
-**Current:** `copilot-review.yml` triggers on `ready_for_review`  
-**Issue:** If CI re-emits ready_for_review somehow, duplicate requests  
-**Fix:** Add check: only request if no review exists yet (gh pr checks)
+- [ ] Webhook server — receives `issues` and `pull_request` events from GitHub
+- [ ] Playwright session — login + click "Assign to Copilot"
+- [ ] Playwright session — click "Ready for review" when [WIP] removed from title
+- [ ] Queue manager — active issue + FIFO queue, persisted to disk
 
-```yaml
-if: >
-  github.event.pull_request.requested_reviewers.*.login != 'copilot[bot]'
-```
+### GitHub Actions (all implemented)
+
+- [x] `issue-webhook.yml` — POSTs to VPS bot on issue open/close
+- [x] `ci.yml` — build + test + e2e + docs check on `ready_for_review`
+- [x] `copilot-review.yml` — requests Copilot review on CI success (`workflow_run`)
+- [x] `auto-merge.yml` — squash merge on Copilot approval
 
 ---
 
 ## Etap 2 — Full Flow (Future)
 
-When MVP is **battle-tested**, add:
+When MVP is battle-tested, add:
 
 - Telegram bot (manager task entry point)
 - GitHub ↔ Telegram bidirectional sync
 - LLM clarification loop (max 3 rounds, updates issue body)
-- Multiple concurrent Copilot workers (parallel queues)
 
 ```
 Manager writes task on Telegram
@@ -132,117 +133,12 @@ LLM analyzes issue → asks clarifying questions (if needed, max 3 rounds)
     ↓
 GitHub Issue ↔ Telegram (bidirectional sync)
     ↓
-Once clarity achieved: LLM updates Issue body, VPS Bot assigns Copilot
+LLM satisfied → updates Issue body, VPS Bot assigns Copilot
     ↓
 [continues with MVP flow from step 4 onwards]
 ```
 
----
-
-## Old Full Flow (Reference)
-
-See git history if needed.
-GitHub Action: auto-request Copilot review
-│
-▼
-Copilot Review Agent
-│
-├── approves → auto-merge to main
-└── requests changes → Copilot Agent fixes → CI reruns
-│
-▼
-Vercel: auto-deploy on merge to main
-│
-▼
-GitHub Action: issue closed → POST /issue to VPS Bot
-│
-▼
-VPS Bot: dequeues next issue → Playwright clicks "Assign to Copilot"
-
-```
-
----
-
-## Task Queue
-
-Only **one active Copilot issue** at a time — no merge conflicts.
-
-Queue state is managed entirely by the VPS bot — no GitHub labels involved.
-
-| Bot state | Meaning                                      |
-| --------- | -------------------------------------------- |
-| `active`  | Copilot assigned, PR in progress             |
-| `queued`  | Waiting; will start when active issue closes |
-
-When an issue is closed, the bot automatically picks the oldest queued issue
-and clicks "Assign to Copilot" — no human action required.
-
----
-
-## Clarification Loop (detail)
-
-```
-
-Issue created
-│
-▼
-LLM analyses:
-
-- Is the task clear enough to implement?
-- Are there architectural concerns?
-- What is missing?
-  │
-  ├── clear + no concerns → skip to "Issue ready"
-  │
-  └── questions/concerns → post comment on Issue
-  │
-  Webhook → VPS Bot → Telegram
-  │
-  Manager replies on Telegram
-  │
-  Bot appends to reply:
-  "Czy to wyjaśnia wątpliwości?
-  Jeśli nie — zadaj kolejne pytanie.
-  Jeśli tak — zaktualizuj issue i zacznij."
-  │
-  Bot posts reply as Issue comment
-  │
-  LLM evaluates again
-  │
-  (repeat, max 3 rounds total)
-  │
-  Round 3 exhausted → proceed regardless
-
-Issue ready: - LLM updates Issue body with final, complete description - VPS Bot triggers Playwright "Assign to Copilot" (or queues if one active)
-
-```
-
----
-
-## Components to Build
-
-### Etap 1 — Code Foundation (current)
-
-- [ ] Vitest + React Testing Library setup
-- [ ] First unit tests (ScrollPicker, RestTimer, LogSetDrawer)
-- [ ] Playwright E2E setup + smoke test (session flow with mocked Firebase)
-- [ ] GitHub Actions CI workflow (build + test + docs check)
-- [ ] Co-located `.md` for all existing components and hooks
-- [ ] `.github/copilot-instructions.md` ✅
-
-### Etap 2 — GitHub Automation
-
-- [ ] VPS Bot: webhook server (Express, Node.js)
-- [ ] VPS Bot: Playwright session — login + "Assign to Copilot" click
-- [ ] VPS Bot: internal queue (active issue + FIFO queue, persisted to disk)
-- [ ] VPS Bot: `/issue` endpoint — handles `opened` and `closed` events
-- [ ] Action: `issue-webhook.yml` ✅ — POSTs to VPS bot on issue open/close
-- [ ] Action: auto-request Copilot review on ready PR ✅
-- [ ] Action: auto-merge when CI green + review approved ✅
-- [ ] Action: convert draft PR to ready (pr-ready.yml) ✅
-- [ ] Action: CI (build + test + docs check) ✅
-
-### Etap 3 — Bot (Telegram ↔ GitHub ↔ LLM)
+### Stage 2 Components
 
 - [ ] Telegram bot (Telegraf)
 - [ ] Telegram → GitHub Issue (bot creates issue via API)
@@ -255,30 +151,25 @@ Issue ready: - LLM updates Issue body with final, complete description - VPS Bot
 
 ## Infrastructure
 
-| Service           | Purpose                              | Notes                                            |
-| ----------------- | ------------------------------------ | ------------------------------------------------ |
-| GitHub            | Repo, Issues, Actions, Copilot Agent | Central hub                                      |
-| Vercel            | Deployment                           | Auto on merge to `main`                          |
-| VPS (self-hosted) | Bot server                           | Must be always online — receives webhooks        |
-| GitHub Models API | LLM for clarification loop           | GPT-4o / Claude — one token, in GitHub ecosystem |
-| Telegram          | Manager interface                    | Bot created via BotFather                        |
+| Service           | Purpose                              | Notes                                     |
+| ----------------- | ------------------------------------ | ----------------------------------------- |
+| GitHub            | Repo, Issues, Actions, Copilot Agent | Central hub                               |
+| Vercel            | Deployment                           | Auto on merge to `main`                   |
+| VPS (self-hosted) | Bot server                           | Must be always online — receives webhooks |
+| GitHub Models API | LLM for clarification loop           | Etap 2 only                               |
+| Telegram          | Manager interface                    | Etap 2 only                               |
 
 ---
 
 ## Design Principles
 
-**Manager = sets direction and priorities.** Precise task descriptions. Knows how to break
-large features into small, focused issues that don't overwhelm the developer.
+**Bot = hands.** GitHub token restrictions are real and permanent. Playwright running as a
+human user is the escape hatch for actions the API won't allow from automation tokens.
 
-**Copilot = senior developer.** Executes but thinks. Will push back on bad decisions.
-Will ask before writing wrong code. Quality is non-negotiable.
+**Actions = reactions.** Stateless event handlers only. No Playwright, no queues, no state.
 
-**No auto-merge without green CI.** Tests + docs check are the safety net. One developer
-(human or AI) skipping them poisons the culture for the whole team.
+**No auto-merge without green CI.** Tests + docs check are the safety net.
 
-**Sequential tasks, no parallel PRs.** Prevents merge conflicts. If a task is urgent,
-current PR can be manually merged fast-tracked — queue moves immediately.
+**Sequential tasks, no parallel PRs.** Prevents merge conflicts.
 
-**Documentation debt = code debt.** An undocumented component is a liability for every
-future LLM working in this codebase. `.md` files are first-class citizens.
-```
+**Documentation debt = code debt.** `.md` files are first-class citizens.
