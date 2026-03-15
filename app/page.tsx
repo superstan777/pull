@@ -23,6 +23,10 @@ function HomeContent() {
   const [starting, setStarting] = useState(false);
 
   useEffect(() => {
+    console.log("home");
+  }, []);
+
+  useEffect(() => {
     if (!user) return;
     getActiveSession(user.uid)
       .then(setActiveSession)
