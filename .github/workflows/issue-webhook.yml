@@ -5,7 +5,7 @@ on:
     types:
       - opened
       - closed
-  pull_request:
+  pull_request_target:
     types:
       - edited
       - closed
