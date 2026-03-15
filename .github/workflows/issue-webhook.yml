@@ -5,20 +5,52 @@ on:
     types:
       - opened
       - closed
+  pull_request:
+    types:
+      - edited
+      - closed
 
 permissions: {}
 
 jobs:
-  notify-bot:
-    name: Notify VPS Bot
+  notify-bot-issue:
+    name: Notify Bot — Issue Event
     runs-on: ubuntu-latest
+    if: github.event_name == 'issues'
     steps:
       - name: POST to bot
         env:
           BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
           BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
         run: |
-          curl -sf -X POST "${BOT_WEBHOOK_URL}/issue" \
+          curl -sf -X POST "${BOT_WEBHOOK_URL}/webhook" \
             -H "Content-Type: application/json" \
             -H "X-Webhook-Secret: ${BOT_WEBHOOK_SECRET}" \
-            -d '{"action":"${{ github.event.action }}","issue_number":${{ github.event.issue.number }},"repo":"${{ github.repository }}"}'
+            -d "{\"event\":\"issues\",\"action\":\"${{ github.event.action }}\",\"issue_number\":${{ github.event.issue.number }},\"repo\":\"${{ github.repository }}\"}"
+
+  notify-bot-pr:
+    name: Notify Bot — Pull Request Event
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: POST to bot (edited)
+        if: github.event.action == 'edited'
+        env:
+          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
+          BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
+        run: |
+          curl -sf -X POST "${BOT_WEBHOOK_URL}/webhook" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${BOT_WEBHOOK_SECRET}" \
+            -d "{\"event\":\"pull_request\",\"action\":\"edited\",\"pr_number\":${{ github.event.pull_request.number }},\"repo\":\"${{ github.repository }}\",\"title\":\"${{ github.event.pull_request.title }}\",\"previous_title\":\"${{ github.event.changes.title.from }}\"}"
+
+      - name: POST to bot (closed)
+        if: github.event.action == 'closed'
+        env:
+          BOT_WEBHOOK_URL: ${{ secrets.BOT_WEBHOOK_URL }}
+          BOT_WEBHOOK_SECRET: ${{ secrets.BOT_WEBHOOK_SECRET }}
+        run: |
+          curl -sf -X POST "${BOT_WEBHOOK_URL}/webhook" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${BOT_WEBHOOK_SECRET}" \
+            -d "{\"event\":\"pull_request\",\"action\":\"closed\",\"pr_number\":${{ github.event.pull_request.number }},\"repo\":\"${{ github.repository }}\",\"merged\":${{ github.event.pull_request.merged }}}"
